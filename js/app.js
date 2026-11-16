@@ -5,6 +5,7 @@ import { splitTranscript, toChecklistItems, proposeNodeName } from './splitter.j
 import { loadModel, isReady } from './embedder.js';
 import { classify, ensureVectors } from './sorter.js';
 import { isSupported, createRecogniser } from './speech.js';
+import { glyph } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
 const ICONS = ['🎓', '🌿', '💞', '🛒', '💡', '💼', '🏋️', '💰', '✈️', '🍳', '🚗', '🏠', '📚', '🎬', '🩺', '⭐'];
@@ -29,6 +30,7 @@ function h(tag, props = {}, ...kids) {
     if (k === 'class') e.className = v;
     else if (k === 'text') e.textContent = v;
     else if (k === 'value') e.value = v;
+    else if (k === 'icon') e.prepend(glyph(v));   // list `icon` after `text`: setting text clears children
     else if (k === 'style') e.setAttribute('style', v);
     else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
     else e.setAttribute(k, v === true ? '' : v);
@@ -87,7 +89,7 @@ function openSheet({ title = '', tall = false, counter = '', onClose } = {}) {
       titleEl.textContent = t;
       icoSlot.replaceChildren();
       icoSlot.hidden = !icon;
-      if (icon) icoSlot.append(h('span', { class: 'hico', text: icon, style: `background:color-mix(in srgb, ${colour} 20%, transparent)` }));
+      if (icon) icoSlot.append(h('span', { class: 'hico', icon, style: `--c:${colour}` }));
       actions.replaceChildren(...acts);
     }
   };
@@ -124,7 +126,7 @@ function renderHome() {
   nodes.forEach((n, i) => {
     const items = allItems.filter((x) => x.nodeId === n.id).sort((a, b) => b.createdAt - a.createdAt);
     grid.append(h('button', { class: 'card glass', style: `--i:${i};--c:${colourOf(n)}`, onclick: () => openNodeSheet(n.id) },
-      h('span', { class: 'ico', text: n.icon }),
+      h('span', { class: 'ico', icon: n.icon }),
       h('span', { class: 'name', text: n.name }),
       h('span', { class: 'count', text: countLine(n, items) }),
       items.slice(0, 2).map((x) => h('span', { class: 'peek', text: x.text }))));
@@ -170,9 +172,9 @@ function openItemActions(item, node, rerender) {
   const s = openSheet({ title: node.type === 'checklist' ? 'Item' : 'Note' });
   s.body.append(
     h('div', { class: 'quote glass', text: item.text }),
-    h('button', { class: 'btn left', text: '✏️  Edit', onclick: () => openEditItem(item, s, rerender) }),
-    h('button', { class: 'btn left', text: '➡️  Move', onclick: () => openMoveItem(item, s, rerender) }),
-    h('button', { class: 'btn left danger', text: '🗑  Delete', onclick: async () => {
+    h('button', { class: 'btn left', text: 'Edit', onclick: () => openEditItem(item, s, rerender) }),
+    h('button', { class: 'btn left', text: 'Move', onclick: () => openMoveItem(item, s, rerender) }),
+    h('button', { class: 'btn left danger', text: 'Delete', onclick: async () => {
       s.close();
       await deleteItem(item.id);
       await rerender();
@@ -201,7 +203,7 @@ function openMoveItem(item, parent, rerender) {
   const others = nodes.filter((n) => n.id !== item.nodeId);
   if (!others.length) s.body.append(h('div', { class: 'empty', text: 'No other nodes' }));
   for (const n of others) {
-    s.body.append(h('button', { class: 'btn left', text: `${n.icon}  ${n.name}`, onclick: async () => {
+    s.body.append(h('button', { class: 'btn left', text: n.name, icon: n.icon, onclick: async () => {
       await updateItem(item.id, { nodeId: n.id, confirmed: true });
       s.close(); parent.close();
       await tryEnsure();
@@ -218,7 +220,7 @@ function openNodeEditor({ node = null, prefillName = '', onSaved, onDeleted } = 
   let type = node ? node.type : 'notes';
   const name = h('input', { class: 'field', type: 'text', placeholder: 'Name', value: node ? node.name : prefillName, maxlength: '40' });
   const desc = h('input', { class: 'field', type: 'text', placeholder: 'What goes here? Helps sorting', value: node ? node.description : '' });
-  const iconBtns = ICONS.map((e) => h('button', { type: 'button', text: e, 'aria-label': e, onclick: () => { icon = e; sync(); } }));
+  const iconBtns = ICONS.map((e) => h('button', { type: 'button', icon: e, 'aria-label': e, onclick: () => { icon = e; sync(); } }));
   const swBtns = Object.keys(COLOURS).map((c) => h('button', { type: 'button', style: `background:${COLOURS[c]}`, 'aria-label': c, onclick: () => { colour = c; sync(); } }));
   const typeBtns = [['notes', 'Notes'], ['checklist', 'Checklist']].map(([v, l]) => h('button', { type: 'button', text: l, onclick: () => { type = v; sync(); } }));
   function sync() {
@@ -226,7 +228,8 @@ function openNodeEditor({ node = null, prefillName = '', onSaved, onDeleted } = 
     swBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(Object.keys(COLOURS)[i] === colour)));
     typeBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(['notes', 'checklist'][i] === type)));
   }
-  s.body.append(
+  // Native append() prints arrays and null as text, so flatten and drop the empty slots first.
+  s.body.append(...[
     h('div', { class: 'label', text: 'Name' }), name,
     h('div', { class: 'label', text: 'Icon' }), h('div', { class: 'icons' }, iconBtns),
     h('div', { class: 'label', text: 'Colour' }), h('div', { class: 'swatches' }, swBtns),
@@ -249,7 +252,7 @@ function openNodeEditor({ node = null, prefillName = '', onSaved, onDeleted } = 
       s.close();
       if (onDeleted) onDeleted();
       await refresh();
-    } }) : null);
+    } }) : null].flat().filter(Boolean));
   sync();
   if (!node) name.focus();
 }
@@ -270,7 +273,7 @@ function askUnsure(piece, index, total, captureId) {
     s.body.append(h('div', { class: 'quote glass', text: piece.text }));
     const cands = piece.candidates.map((id) => nodes.find((n) => n.id === id)).filter(Boolean);
     for (const n of cands) {
-      s.body.append(h('button', { class: 'btn left', text: `${n.icon}  ${n.name}`, onclick: async () => {
+      s.body.append(h('button', { class: 'btn left', text: n.name, icon: n.icon, onclick: async () => {
         await savePieceTo(n, piece, captureId);
         s.close();
       } }));
@@ -400,15 +403,15 @@ function openSettings() {
     s.close();
   });
   s.body.append(
-    h('button', { class: 'btn left', text: '⬇️  Export backup', onclick: async () => {
+    h('button', { class: 'btn left', text: 'Export backup', onclick: async () => {
       const data = await exportAll();
       const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
       const a = h('a', { href: url, download: `suun-backup-${new Date().toISOString().slice(0, 10)}.json` });
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } }),
-    h('button', { class: 'btn left', text: '⬆️  Import backup', onclick: () => file.click() }),
-    h('button', { class: 'btn left', text: '🕘  History', onclick: openHistory }),
+    h('button', { class: 'btn left', text: 'Import backup', onclick: () => file.click() }),
+    h('button', { class: 'btn left', text: 'History', onclick: openHistory }),
     file,
     h('div', { class: 'foot', text: 'Suun · your notes stay on this device' }));
 }

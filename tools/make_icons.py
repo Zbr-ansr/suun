@@ -2,7 +2,7 @@
 import os, struct, zlib
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'icons')
-C1, C2 = (0x0A, 0x84, 0xFF), (0xBF, 0x5A, 0xF2)
+C1, C2 = (0x64, 0xD2, 0xFF), (0x0A, 0x5C, 0xE0)
 SS = 3  # supersampling per axis
 
 

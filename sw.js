@@ -1,10 +1,10 @@
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = `suun-shell-${VERSION}`;
 const VENDOR = `suun-vendor-${VERSION}`;
 const PRECACHE = [
   './', './index.html', './manifest.webmanifest', './css/styles.css',
   './js/config.js', './js/db.js', './js/splitter.js', './js/embedder.js',
-  './js/sorter.js', './js/speech.js', './js/app.js', './js/background.js',
+  './js/sorter.js', './js/speech.js', './js/app.js', './js/background.js', './js/icons.js',
   './icons/icon-192.png', './icons/icon-512.png',
 ];
 
