@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Suun sorter test</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; }
+  pre { white-space: pre-wrap; }
+  table { border-collapse: collapse; margin: 12px 0; }
+  td, th { border: 1px solid #999; padding: 3px 8px; text-align: left; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>Sorter test</h1>
+<pre id="log"></pre>
+<div id="tbl"></div>
+<script type="module">
+import { MIN_SCORE, MIN_MARGIN } from '../js/config.js';
+import { seedIfEmpty, getNodes, addNode, addItem } from '../js/db.js';
+import { loadModel } from '../js/embedder.js';
+import { cosine, rankNodes, decide, classify } from '../js/sorter.js';
+
+const logEl = document.getElementById('log');
+const log = (s) => { logEl.textContent += s + '\n'; };
+const setLast = (s) => {
+  const lines = logEl.textContent.split('\n');
+  lines[lines.length - 2] = s;
+  logEl.textContent = lines.join('\n');
+};
+
+// ---- 1. Pure tests ----
+let n = 0, failed = 0;
+const check = (name, ok) => { n++; if (!ok) { failed++; log('  FAIL: ' + name); } };
+const near = (a, b) => Math.abs(a - b) < 1e-6; // Float32 rounding
+const V = (a, b, c) => Float32Array.of(a, b, c);
+
+check('cosine identical', near(cosine(V(1, 0, 0), V(1, 0, 0)), 1));
+check('cosine orthogonal', near(cosine(V(1, 0, 0), V(0, 1, 0)), 0));
+check('cosine opposite', near(cosine(V(1, 0, 0), V(-1, 0, 0)), -1));
+
+const A = { id: 'A', anchorVec: V(1, 0, 0) };
+const B = { id: 'B', anchorVec: V(0, 1, 0) };
+const C = { id: 'C', anchorVec: V(0, 0, 1) };
+const r1 = rankNodes(V(1, 0, 0), [A, B, C], []);
+check('rank order', r1[0].nodeId === 'A' && r1.length === 3 && r1[0].score >= r1[1].score && r1[1].score >= r1[2].score);
+check('rank top score', near(r1[0].score, 1));
+check('decide confident', decide(r1).status === 'confident' && decide(r1).nodeId === 'A');
+
+const dLow = decide([{ nodeId: 'A', score: MIN_SCORE - 0.05 }, { nodeId: 'B', score: 0.0 }]);
+check('decide low score is unsure', dLow.status === 'unsure' && dLow.candidates.join() === 'A,B');
+const dTie = decide([{ nodeId: 'A', score: 0.8 }, { nodeId: 'B', score: 0.8 }]);
+check('decide tie is unsure', dTie.status === 'unsure' && dTie.candidates.join() === 'A,B');
+const dEdge = decide([{ nodeId: 'A', score: 0.8 }, { nodeId: 'B', score: 0.8 - MIN_MARGIN - 0.001 }]);
+check('decide margin just met', dEdge.status === 'confident');
+const dOne = decide([{ nodeId: 'A', score: MIN_SCORE + 0.1 }]);
+check('decide single node confident', dOne.status === 'confident' && dOne.nodeId === 'A');
+const dOneLow = decide([{ nodeId: 'A', score: MIN_SCORE - 0.1 }]);
+check('decide single node low', dOneLow.status === 'unsure' && dOneLow.candidates.join() === 'A');
+const dZero = decide([]);
+check('decide zero nodes', dZero.status === 'unsure' && dZero.candidates.length === 0);
+check('rank zero nodes', rankNodes(V(1, 0, 0), [], []).length === 0);
+
+// A confirmed item raises a node's score.
+const q = V(0, 0.8, 0.6); // closest to anchors B and C
+const base = rankNodes(q, [A, B, C], []).find((r) => r.nodeId === 'A').score;
+const item = { nodeId: 'A', confirmed: true, vec: V(0, 0.8, 0.6), createdAt: 1 };
+const raised = rankNodes(q, [A, B, C], [item]);
+check('confirmed item raises score', raised[0].nodeId === 'A' && raised[0].score > base && near(raised[0].score, 1));
+const ignored = rankNodes(q, [A, B, C], [{ ...item, confirmed: false }]);
+check('unconfirmed item ignored', near(ignored.find((r) => r.nodeId === 'A').score, base) && ignored[0].nodeId !== 'A');
+
+log(failed === 0 ? `PURE PASS ${n}/${n}` : `PURE FAIL ${failed} of ${n}`);
+
+// ---- 2. Fresh database, seed, model ----
+await new Promise((resolve, reject) => {
+  const req = indexedDB.deleteDatabase('suun');
+  req.onsuccess = () => resolve();
+  req.onerror = () => reject(req.error);
+  // Blocked means another tab holds the database open; the delete completes once it lets go.
+  req.onblocked = () => {
+    log('Database delete blocked: close other tabs on this origin that use suun (waiting 15 s)');
+    setTimeout(() => reject(new Error('Database delete still blocked')), 15000);
+  };
+});
+await seedIfEmpty();
+log('Loading model: 0%');
+const t0 = performance.now();
+await loadModel((f) => setLast(`Loading model: ${Math.round(f * 100)}%`));
+log(`Model ready in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+
+// ---- 3. Phrase table ----
+const IN = {
+  Academic: ['Finish the mesh independence study by Friday', 'Email professor about the thesis draft', 'Rerun the Fluent case with a finer mesh', 'Prepare slides for the project review', 'Read the paper on supercritical CO2 heat transfer', 'Submit the lab report on Monday'],
+  Personal: ['Go to the gym at six tomorrow', 'Book a dentist appointment', 'Pay the electricity bill', 'Sleep before midnight this week', 'Renew my passport', 'Start saving two thousand rupees a month'],
+  Relationships: ['Call mom on Sunday', 'Wish Arjun happy birthday', 'Plan a dinner with Riya on Saturday', 'Apologise to dad for missing his call', "Reply to Kabir's message about the trip", 'Tell Riya how much I appreciated her help'],
+  'Shopping List': ['Buy milk, eggs and bread', 'Need to get shampoo and toothpaste', 'Order a new phone charger online', 'Tomatoes onions and potatoes', 'Pick up detergent from the shop', 'Add rice and dal to the shopping list']
+};
+const OUT = ['The capital of Australia is Canberra', 'Watch the new Nolan film', 'India won the cricket match yesterday', 'Recipe idea paneer tikka with mint chutney', 'Renew car insurance before December', 'Book train tickets to Jaipur'];
+
+const nodes = await getNodes();
+const nameOf = Object.fromEntries(nodes.map((x) => [x.id, x.name]));
+const cases = [];
+for (const [name, list] of Object.entries(IN)) list.forEach((p) => cases.push({ p, exp: name }));
+OUT.forEach((p) => cases.push({ p, exp: 'unsure' }));
+
+let ok = 0, wrong = 0, unsureIn = 0, unsureOut = 0;
+const rows = [];
+for (const c of cases) {
+  const [res] = await classify([c.p]);
+  const ranked = rankNodes(res.vec, await getNodes(), []); // re-read: anchorVec is filled by the first classify
+  const chosen = res.nodeId ? nameOf[res.nodeId] : '(none)';
+  if (c.exp === 'unsure') { if (res.status === 'unsure') unsureOut++; }
+  else if (res.status === 'unsure') unsureIn++;
+  else if (chosen === c.exp) ok++;
+  else wrong++;
+  rows.push([c.p, c.exp, chosen, ranked[0].score.toFixed(3), (ranked[1] ? ranked[1].score : NaN).toFixed(3), res.status,
+    `${nameOf[ranked[0].nodeId]}/${nameOf[ranked[1].nodeId]}`]);
+}
+const tbl = document.createElement('table');
+tbl.innerHTML = '<tr><th>Phrase</th><th>Expected</th><th>Chosen</th><th>Best</th><th>Second</th><th>Status</th><th>Top two</th></tr>' +
+  rows.map((r) => '<tr>' + r.map((v, i) => `<td${i === 3 || i === 4 ? ' class="n"' : ''}>${v.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</td>`).join('') + '</tr>').join('');
+document.getElementById('tbl').appendChild(tbl);
+
+// ---- 4. Summary ----
+log(`IN-SCOPE confident-correct: ${ok}/24`);
+log(`IN-SCOPE confident-wrong: ${wrong}/24`);
+log(`IN-SCOPE unsure: ${unsureIn}/24`);
+log(`OUT-OF-SCOPE unsure: ${unsureOut}/6`);
+
+// ---- 5. Learning test ----
+const car = await addNode({ name: 'Car', type: 'notes', description: '', colour: 'teal', icon: '🚗' });
+await addItem({ nodeId: car.id, text: 'Renew car insurance before December', confirmed: true, vec: null });
+const [lr] = await classify(['Get the car serviced this month']);
+const allNodes = await getNodes();
+const lrRanked = rankNodes(lr.vec, allNodes, (await (await import('../js/db.js')).getAllItems()).filter((i) => i.confirmed));
+log(lrRanked[0].nodeId === car.id ? 'LEARNING PASS' : 'LEARNING FAIL');
+log(`  top: ${allNodes.find((x) => x.id === lrRanked[0].nodeId).name} ${lrRanked[0].score.toFixed(3)}`);
+log('DONE');
+</script>
+</body>
+</html>

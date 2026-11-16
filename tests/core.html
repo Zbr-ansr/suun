@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>core tests</title>
+<style>body{font:13px/1.5 monospace;padding:12px}.f{color:#c00}</style>
+</head>
+<body>
+<pre id="out"></pre>
+<script type="module">
+import { splitTranscript, toChecklistItems, proposeNodeName } from '../js/splitter.js';
+import * as db from '../js/db.js';
+import { STARTER_NODES } from '../js/config.js';
+
+const out = document.getElementById('out');
+let n = 0, failed = 0;
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+function check(name, ok, detail = '') {
+  n++;
+  if (!ok) failed++;
+  const line = (ok ? 'ok   ' : 'FAIL ') + name + (ok ? '' : ' ' + detail);
+  const d = document.createElement('div');
+  d.textContent = line;
+  if (!ok) d.className = 'f';
+  out.appendChild(d);
+}
+const same = (name, got, want) => check(name, eq(got, want), 'got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want));
+async function throws(fn) { try { await fn(); return false; } catch { return true; } }
+
+function deleteDb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.deleteDatabase('suun');
+    r.onsuccess = () => res();
+    r.onerror = () => rej(r.error);
+    r.onblocked = () => rej(new Error('delete blocked'));
+  });
+}
+
+async function run() {
+  // splitTranscript
+  const S = [
+    ['I need to finish the mesh independence study by Friday. Next call mom about Sunday',
+      ['I need to finish the mesh independence study by Friday', 'Call mom about Sunday']],
+    ['meet the professor next week about the report', ['Meet the professor next week about the report']],
+    ['buy milk and eggs and also remind me to renew gym membership',
+      ['Buy milk and eggs', 'Remind me to renew gym membership']],
+    ['um so call Riya\nalso book dentist', ['Call Riya', 'Book dentist']],
+    ['pay the bill new note is the lab open on Sunday?', ['Pay the bill', 'Is the lab open on Sunday?']],
+    ['', []],
+    ['um', []]
+  ];
+  S.forEach(([i, o]) => same('split: ' + JSON.stringify(i), splitTranscript(i), o));
+
+  // toChecklistItems
+  [
+    ['Buy milk, eggs and bread', ['Milk', 'Eggs', 'Bread']],
+    ['I need to get shampoo and a toothbrush from the store', ['Shampoo', 'Toothbrush']],
+    ['Add rice and dal to the shopping list', ['Rice', 'Dal']],
+    ['Tomatoes', ['Tomatoes']],
+    ['getting fruit', ['Getting fruit']]
+  ].forEach(([i, o]) => same('checklist: ' + i, toChecklistItems(i), o));
+
+  // proposeNodeName
+  same('name: car service', proposeNodeName('The car service is due in December'), 'Car Service');
+  same('name: none', proposeNodeName('I need to'), 'New Node');
+
+  // storage
+  await deleteDb();
+  await db.openDb();
+  await db.openDb();
+  check('openDb repeatable', true);
+  await db.seedIfEmpty();
+  let nodes = await db.getNodes();
+  same('seed: 4 nodes in order', nodes.map((x) => x.name), STARTER_NODES.map((x) => x.name));
+  check('seed: order 1..4 and null anchorVec', eq(nodes.map((x) => x.order), [1, 2, 3, 4]) && nodes.every((x) => x.anchorVec === null));
+  await db.seedIfEmpty();
+  check('seed: no duplicate on second call', (await db.getNodes()).length === 4);
+
+  const nn = await db.addNode({ name: 'Cars', type: 'notes', description: 'vehicles', colour: 'teal', icon: '🚗' });
+  check('addNode order = max+1', nn.order === 5 && nn.anchorVec === null && typeof nn.id === 'string');
+  nodes = await db.getNodes();
+  check('addNode appears last', nodes.length === 5 && nodes[4].id === nn.id);
+
+  await db.updateNode(nn.id, { anchorVec: new Float32Array(384) });
+  const u1 = await db.updateNode(nn.id, { icon: '🚙' });
+  check('updateNode icon keeps anchorVec', u1.anchorVec instanceof Float32Array && u1.icon === '🚙');
+  const u2 = await db.updateNode(nn.id, { description: 'cars and bikes' });
+  check('updateNode description nulls anchorVec', u2.anchorVec === null && u2.description === 'cars and bikes');
+  await db.updateNode(nn.id, { anchorVec: new Float32Array(384) });
+  const u3 = await db.updateNode(nn.id, { name: 'Vehicles' });
+  check('updateNode name nulls anchorVec', u3.anchorVec === null && u3.name === 'Vehicles');
+  check('updateNode unknown id throws', await throws(() => db.updateNode('nope', { icon: 'x' })));
+
+  const cap1 = await db.addCapture({ text: 'first', source: 'typed' });
+  await new Promise((r) => setTimeout(r, 5));
+  const cap2 = await db.addCapture({ text: 'second', source: 'voice' });
+  same('getCaptures newest first', (await db.getCaptures()).map((c) => c.text), ['second', 'first']);
+  check('capture fields', cap2.source === 'voice' && typeof cap1.id === 'string' && typeof cap1.createdAt === 'number');
+
+  const i1 = await db.addItem({ nodeId: nn.id, text: 'one', captureId: cap1.id });
+  await new Promise((r) => setTimeout(r, 5));
+  const i2 = await db.addItem({ nodeId: nn.id, text: 'two', captureId: cap1.id, confirmed: true, vec: new Float32Array(384).fill(0.5) });
+  await new Promise((r) => setTimeout(r, 5));
+  const other = await db.addItem({ nodeId: nodes[0].id, text: 'other', captureId: cap2.id });
+  check('addItem defaults', i1.done === false && i1.confirmed === false && i1.vec === null);
+  same('getItems ascending by createdAt', (await db.getItems(nn.id)).map((x) => x.text), ['one', 'two']);
+  check('getItems filters by node', (await db.getItems(nodes[0].id)).length === 1);
+  check('getAllItems', (await db.getAllItems()).length === 3);
+
+  const back = (await db.getItems(nn.id)).find((x) => x.id === i2.id);
+  check('vec reads back as Float32Array(384)', back.vec instanceof Float32Array && back.vec.length === 384 && back.vec[0] === 0.5);
+  const ui = await db.updateItem(i1.id, { done: true, text: 'one!' });
+  check('updateItem', ui.done === true && ui.text === 'one!' && (await db.getAllItems()).find((x) => x.id === i1.id).done === true);
+  check('updateItem unknown id throws', await throws(() => db.updateItem('nope', {})));
+
+  await db.deleteItem(other.id);
+  check('deleteItem', (await db.getAllItems()).length === 2);
+
+  // export / import
+  const ex = await db.exportAll();
+  check('export header', ex.app === 'suun' && ex.version === 1 && typeof ex.exportedAt === 'number');
+  check('export counts', ex.nodes.length === 5 && ex.items.length === 2 && ex.captures.length === 2);
+  check('export vectors null', ex.nodes.every((x) => x.anchorVec === null) && ex.items.every((x) => x.vec === null));
+  const json = JSON.parse(JSON.stringify(ex));
+
+  await db.deleteNode(nn.id);
+  check('deleteNode removes node', (await db.getNodes()).length === 4);
+  check('deleteNode removes its items', (await db.getAllItems()).length === 0);
+
+  await db.importAll(json);
+  const nodes2 = await db.getNodes();
+  same('import round-trip nodes', nodes2.map((x) => x.name), ['Academic', 'Personal', 'Relationships', 'Shopping List', 'Vehicles']);
+  const items2 = await db.getAllItems();
+  same('import round-trip items', items2.map((x) => x.text).sort(), ['one!', 'two']);
+  check('import vectors null', items2.every((x) => x.vec === null) && nodes2.every((x) => x.anchorVec === null));
+  same('import round-trip captures', (await db.getCaptures()).map((c) => c.text), ['second', 'first']);
+  await db.seedIfEmpty();
+  check('import sets seeded (no re-seed)', (await db.getNodes()).length === 5);
+
+  check("importAll({app:'x'}) throws", await throws(() => db.importAll({ app: 'x' })));
+  check('importAll wrong version throws', await throws(() => db.importAll({ app: 'suun', version: 2, nodes: [], items: [], captures: [] })));
+  check('importAll(null) throws', await throws(() => db.importAll(null)));
+  check('failed import leaves data intact', (await db.getNodes()).length === 5);
+}
+
+try {
+  await run();
+} catch (e) {
+  check('unexpected error: ' + (e && e.message), false);
+}
+const final = failed === 0 ? `PASS ${n}/${n}` : `FAIL ${failed} of ${n}`;
+const d = document.createElement('div');
+d.id = 'result';
+d.textContent = final;
+out.appendChild(d);
+document.title = final;
+</script>
+</body>
+</html>
