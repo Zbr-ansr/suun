@@ -1,6 +1,7 @@
 import { MIN_SCORE, MIN_MARGIN, MAX_REFS_PER_NODE } from './config.js';
 import { getNodes, getAllItems, updateNode, updateItem } from './db.js';
 import { embed } from './embedder.js';
+import { softSplits } from './splitter.js';
 
 export function cosine(a, b) {
   let s = 0;
@@ -75,4 +76,54 @@ export async function classify(pieces) {
       candidates: d.status === 'confident' ? [] : d.candidates
     };
   });
+}
+
+// Like classify(), but a piece that holds two thoughts for different nodes is cut in two first.
+// A cut is kept only when each side fits its own node better than the whole piece fits any node.
+export async function classifySplit(pieces) {
+  if (!pieces.length) return [];
+  await ensureVectors();
+  const [nodes, items] = await Promise.all([getNodes(), getAllItems()]);
+  const confirmed = items.filter((i) => i.confirmed === true);
+  const judge = async (text) => {
+    const [vec] = await embed([text]);
+    const ranked = rankNodes(vec, nodes, confirmed);
+    const d = decide(ranked);
+    return {
+      text,
+      vec,
+      status: d.status,
+      nodeId: d.status === 'confident' ? d.nodeId : null,
+      candidates: d.status === 'confident' ? [] : d.candidates,
+      topId: ranked.length ? ranked[0].nodeId : null,
+      score: ranked.length ? ranked[0].score : -Infinity
+    };
+  };
+  // A side is acceptable if it is confident, or if it can itself be cut again (three thoughts in one breath).
+  const usable = (x) => x.status === 'confident' || softSplits(x.text).length > 0;
+  const out = [];
+  const walk = async (whole, depth) => {
+    let best = null;
+    if (depth < 4) {
+      for (const [L, R] of softSplits(whole.text)) {
+        const l = await judge(L);
+        const r = await judge(R);
+        if (l.topId === r.topId) continue;
+        // Both sides must be clear on their own, or be cut again (three thoughts in one breath).
+        if (!usable(l) || !usable(r)) continue;
+        // `dom` is the side that goes where the whole piece would have gone. Removing an unrelated
+        // thought should make it fit that node at least as well as before; if it fits worse, the
+        // two sides were one thought.
+        const dom = l.topId === whole.topId ? l : r.topId === whole.topId ? r : null;
+        if (dom && dom.score < whole.score) continue;
+        const gain = l.score + r.score;
+        if (!best || gain > best.gain) best = { l, r, gain };
+      }
+    }
+    if (!best) { out.push(whole); return; }
+    await walk(best.l, depth + 1);
+    await walk(best.r, depth + 1);
+  };
+  for (const p of pieces) await walk(await judge(p), 0);
+  return out;
 }

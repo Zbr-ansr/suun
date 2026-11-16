@@ -1,4 +1,4 @@
-const VERSION = 'v3';
+const VERSION = 'v4';
 const SHELL = `suun-shell-${VERSION}`;
 const VENDOR = `suun-vendor-${VERSION}`;
 const PRECACHE = [

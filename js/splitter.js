@@ -6,7 +6,7 @@ const NEXT_KEEP = ['week', 'weeks', 'month', 'year', 'day', 'time', 'semester', 
 const CONNECTORS = ['and also', 'another thing', 'one more thing', 'apart from that', 'other than that',
   'by the way', 'oh and'];
 const FILLERS = ['um', 'uh', 'er', 'so', 'okay', 'ok', 'well', 'like', 'also', 'and', 'then', 'right',
-  'yeah', 'actually', 'basically'];
+  'yeah', 'actually', 'basically', 'plus'];
 
 const phrase = (p) => p.replace(/ /g, '\\s+');
 const RE_NEXT = new RegExp('\\bnext\\b(?!\\s+(?:' + NEXT_KEEP.join('|') + ')\\b)', 'gi');
@@ -35,6 +35,34 @@ export function splitTranscript(text) {
   s = s.replace(RE_NEXT, SEP);
   s = s.replace(RE_CONNECTORS, SEP);
   return s.split(SEP).map(tidy).filter(Boolean);
+}
+
+// Places inside one piece where a new thought MAY start: a joining word, or a phrase that opens a new
+// task. These are only candidates; the sorter keeps a cut only when the two sides belong to different nodes.
+const JOINERS = ['and then', 'and', 'also', 'then', 'plus'];
+const STARTERS = ['i need', 'i have to', 'i should', 'i want', 'i must', 'i will', "i'll", 'i also', 'we need',
+  'we have to', 'we should', 'remind me', 'remember to', "don't forget", 'do not forget'];
+const RE_SOFT = new RegExp('\\s+(?:(?:' + JOINERS.map(phrase).join('|') + ')\\s+|(?=(?:' +
+  STARTERS.map(phrase).join('|') + ')\\b))', 'gi');
+const RE_TAIL_JOINER = new RegExp('\\s+(?:' + JOINERS.map(phrase).join('|') + ')$', 'i');
+const wordCount = (s) => s.split(/\s+/).filter(Boolean).length;
+
+export function softSplits(piece) {
+  const s = String(piece ?? '');
+  const seen = new Set();
+  const out = [];
+  for (const m of s.matchAll(RE_SOFT)) {
+    const left = tidy(s.slice(0, m.index).replace(RE_TAIL_JOINER, ''));
+    const right = tidy(s.slice(m.index));
+    const key = left + SEP + right;
+    // A bare "and" usually joins two halves of one thought, so it needs longer sides to count.
+    const min = /^\s+and\s+$/i.test(m[0]) ? 3 : 2;
+    if (wordCount(left) < min || wordCount(right) < min || seen.has(key)) continue;
+    seen.add(key);
+    out.push([left, right]);
+    if (out.length === 8) break;
+  }
+  return out;
 }
 
 const LEAD_INS = ['add to the shopping list', 'add to my shopping list', 'put on the shopping list',

@@ -1,10 +1,10 @@
-import { COLOURS } from './config.js';
+import { COLOURS, SPEECH_LANGS } from './config.js';
 import { openDb, seedIfEmpty, getNodes, addNode, updateNode, deleteNode, getItems, getAllItems, addItem,
   updateItem, deleteItem, addCapture, getCaptures, exportAll, importAll } from './db.js';
 import { splitTranscript, toChecklistItems, proposeNodeName } from './splitter.js';
 import { loadModel, isReady } from './embedder.js';
-import { classify, ensureVectors } from './sorter.js';
-import { isSupported, createRecogniser } from './speech.js';
+import { classifySplit, ensureVectors } from './sorter.js';
+import { isSupported, createRecogniser, getLang, setLang } from './speech.js';
 import { glyph } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
@@ -293,7 +293,7 @@ async function runCapture(raw, source) {
   try {
     const capture = await addCapture({ text, source });
     const pieces = splitTranscript(text);
-    const results = await classify(pieces);
+    const results = await classifySplit(pieces);
     const saved = [];
     for (const r of results.filter((x) => x.status === 'confident')) {
       const node = nodes.find((n) => n.id === r.nodeId);
@@ -356,7 +356,13 @@ function setListening(on) {
 if (isSupported()) {
   recogniser = createRecogniser({
     onInterim: (t) => { interim = t; renderLive(); },
-    onFinalChunk: (t) => { chunks.push(t); interim = ''; renderLive(); },
+    onFinalChunk: (t) => {
+      // Some Android builds resend the whole utterance so far as a new final result: replace, do not repeat.
+      const last = chunks[chunks.length - 1];
+      if (last && t.toLowerCase().startsWith(last.toLowerCase())) chunks[chunks.length - 1] = t;
+      else chunks.push(t);
+      interim = ''; renderLive();
+    },
     onError: (code) => showToast(SPEECH_ERRORS[code] || 'Voice input failed'),
     onEnd: () => {
       const text = chunks.join('\n');
@@ -380,8 +386,36 @@ if (isSupported()) {
 }
 
 /* ---------- settings ---------- */
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; });
+window.addEventListener('appinstalled', () => { installEvt = null; });
+
+function installRow() {
+  if (matchMedia('(display-mode: standalone)').matches) return null;
+  if (installEvt) {
+    return h('button', { class: 'btn left', text: 'Install app', onclick: async (ev) => {
+      const e = installEvt;
+      installEvt = null;
+      ev.currentTarget.remove();
+      if (e) await e.prompt();
+    } });
+  }
+  const note = h('div', { class: 'foot', text: 'To install: open this page in Chrome, then menu (⋮) → Add to Home screen → Install.' });
+  if (navigator.getInstalledRelatedApps) {
+    navigator.getInstalledRelatedApps().then((apps) => {
+      if (apps.length) note.textContent = 'Suun is already installed on this phone. Open it from your app list.';
+    }).catch(() => {});
+  }
+  return note;
+}
+
 function openSettings() {
   const s = openSheet({ title: 'Settings' });
+  const langBtns = SPEECH_LANGS.map(([code, label]) => h('button', { type: 'button', text: label, onclick: () => { setLang(code); syncLang(); } }));
+  function syncLang() {
+    langBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(SPEECH_LANGS[i][0] === getLang())));
+  }
+  syncLang();
   const file = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
   file.addEventListener('change', async () => {
     const f = file.files[0];
@@ -412,6 +446,8 @@ function openSettings() {
     } }),
     h('button', { class: 'btn left', text: 'Import backup', onclick: () => file.click() }),
     h('button', { class: 'btn left', text: 'History', onclick: openHistory }),
+    ...(isSupported() ? [h('div', { class: 'label', text: 'Voice accent' }), h('div', { class: 'seg' }, langBtns)] : []),
+    ...[installRow()].filter(Boolean),
     file,
     h('div', { class: 'foot', text: 'Suun · your notes stay on this device' }));
 }

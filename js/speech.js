@@ -1,4 +1,16 @@
-import { SPEECH_LANG } from './config.js';
+import { SPEECH_LANG, SPEECH_LANGS } from './config.js';
+
+const LANG_KEY = 'suun-lang';
+export function getLang() {
+  try {
+    const v = localStorage.getItem(LANG_KEY);
+    if (SPEECH_LANGS.some(([code]) => code === v)) return v;
+  } catch (e) { /* storage blocked: use the default */ }
+  return SPEECH_LANG;
+}
+export function setLang(code) {
+  try { localStorage.setItem(LANG_KEY, code); } catch (e) { /* ignore */ }
+}
 
 const SR = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
 
@@ -15,7 +27,7 @@ export function createRecogniser({ onInterim, onFinalChunk, onError, onEnd }) {
 
   function build() {
     const r = new SR();
-    r.lang = SPEECH_LANG;
+    r.lang = getLang();
     r.continuous = false;
     r.interimResults = true;
     r.onresult = (event) => {
