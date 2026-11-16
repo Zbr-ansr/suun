@@ -13,7 +13,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --base: #0b0b12;
+    --base: #000000;
     --text: #f5f5f7;
     --glass: rgba(28,28,34,0.55);
     --glass-border: rgba(255,255,255,0.12);
@@ -35,15 +35,29 @@ input, textarea { font: inherit; color: inherit; }
 
 /* background */
 .bg { position: fixed; inset: 0; overflow: hidden; z-index: -1; pointer-events: none; }
-.blob { position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%; filter: blur(60px); opacity: var(--blob-op); will-change: transform; }
-.b1 { background: #0A84FF; top: -20vmax; left: -20vmax; animation: d1 22s ease-in-out infinite alternate; }
-.b2 { background: #BF5AF2; top: -15vmax; right: -25vmax; animation: d2 26s ease-in-out infinite alternate; }
-.b3 { background: #FF375F; bottom: -25vmax; left: -15vmax; animation: d3 30s ease-in-out infinite alternate; }
-.b4 { background: #40C8E0; bottom: -20vmax; right: -20vmax; animation: d4 34s ease-in-out infinite alternate; }
-@keyframes d1 { to { transform: translate(18vmax, 14vmax) scale(1.15); } }
-@keyframes d2 { to { transform: translate(-16vmax, 20vmax) scale(0.9); } }
-@keyframes d3 { to { transform: translate(20vmax, -16vmax) scale(1.2); } }
-@keyframes d4 { to { transform: translate(-18vmax, -12vmax) scale(0.85); } }
+/* Two sheets of caustic lines, each drawn once and then only moved (cheap for the phone).
+   Their loops are 47 s and 61 s, so the pair lines up the same way only every 48 minutes:
+   it repeats, but never looks like it does. */
+.bg .tilt { position: absolute; inset: 0; transition: transform .35s ease-out;
+  transform: translate(calc(var(--tx, 0) * 26px), calc(var(--ty, 0) * 26px)); }
+.bg .tilt svg { position: absolute; left: 50%; top: 50%; width: 160vmax; height: 160vmax;
+  margin: -80vmax 0 0 -80vmax; will-change: transform; }
+.bg .c1 { opacity: .5; animation: ca1 47s ease-in-out infinite; }
+.bg .c2 { opacity: .34; mix-blend-mode: screen; animation: ca2 61s ease-in-out infinite; }
+@keyframes ca1 {
+  0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+  17% { transform: translate(-6vmax, 4vmax) rotate(5deg) scale(1.08); }
+  38% { transform: translate(5vmax, 9vmax) rotate(-3deg) scale(.96); }
+  61% { transform: translate(9vmax, -5vmax) rotate(7deg) scale(1.1); }
+  83% { transform: translate(-4vmax, -8vmax) rotate(-6deg) scale(1.02); }
+}
+@keyframes ca2 {
+  0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1.05); }
+  23% { transform: translate(7vmax, -6vmax) rotate(-8deg) scale(.95); }
+  44% { transform: translate(-8vmax, -3vmax) rotate(4deg) scale(1.12); }
+  69% { transform: translate(-3vmax, 8vmax) rotate(-5deg) scale(1); }
+  88% { transform: translate(6vmax, 5vmax) rotate(9deg) scale(1.08); }
+}
 
 /* glass */
 .glass {
@@ -208,7 +222,7 @@ textarea.field { min-height: 120px; resize: vertical; }
 .foot { text-align: center; font-size: 13px; opacity: 0.6; padding: 12px 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .card, .blob { animation: none !important; }
+  .card, .bg .tilt svg { animation: none !important; }
   .sheet, .backdrop, .toast { animation: none !important; }
   .mic.on .ring { animation: none; opacity: 0.4; }
 }
