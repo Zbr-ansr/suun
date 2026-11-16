@@ -1,19 +1,19 @@
-import { COLOURS, SPEECH_LANGS } from './config.js';
+import { COLOURS } from './config.js';
 import { openDb, seedIfEmpty, getNodes, addNode, updateNode, deleteNode, getItems, getAllItems, addItem,
   updateItem, deleteItem, addCapture, getCaptures, exportAll, importAll } from './db.js';
 import { splitTranscript, toChecklistItems, proposeNodeName } from './splitter.js';
 import { loadModel, isReady } from './embedder.js';
 import { classifySplit, ensureVectors } from './sorter.js';
-import { isSupported, createRecogniser, getLang, setLang } from './speech.js';
+import { isSupported, createRecogniser } from './dictation.js';
 import { glyph } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
 const ICONS = ['🎓', '🌿', '💞', '🛒', '💡', '💼', '🏋️', '💰', '✈️', '🍳', '🚗', '🏠', '📚', '🎬', '🩺', '⭐'];
 const SPEECH_ERRORS = {
   'not-allowed': 'Microphone access is blocked. Allow it in the site settings.',
-  'service-not-allowed': 'Microphone access is blocked. Allow it in the site settings.',
   'audio-capture': 'No microphone found.',
-  'network': 'Voice needs an internet connection. You can type instead.'
+  'model': 'Connect to the internet once to download the voice model (77 MB).',
+  'transcribe': 'Could not turn that recording into text. Try again.'
 };
 
 let nodes = [];
@@ -338,35 +338,54 @@ $('sendBtn').addEventListener('click', sendTyped);
 new ResizeObserver(() => document.documentElement.style.setProperty('--dock-h', $('dock').offsetHeight + 'px')).observe($('dock'));
 
 /* ---------- voice ---------- */
-let chunks = [];
-let interim = '';
+let heard = '';
 let recogniser = null;
-function renderLive() {
-  const t = $('liveText');
-  t.replaceChildren(document.createTextNode(chunks.join(' ')));
-  if (interim) t.append(h('span', { class: 'interim', text: (chunks.length ? ' ' : '') + interim }));
-}
+let clock = null;
 function setListening(on) {
   listening = on;
   $('micBtn').classList.toggle('on', on);
   $('micBtn').setAttribute('aria-label', on ? 'Stop dictation' : 'Start dictation');
-  $('live').hidden = !on;
   updateInputs();
 }
+function showLive(text, hint) {
+  $('live').hidden = false;
+  $('liveText').textContent = text;
+  $('liveHint').textContent = hint || '';
+  $('liveHint').hidden = !hint;
+}
 if (isSupported()) {
+  let working = false;
+  let loadPct = null;
   recogniser = createRecogniser({
-    onInterim: (t) => { interim = t; renderLive(); },
-    onFinalChunk: (t) => {
-      // Some Android builds resend the whole utterance so far as a new final result: replace, do not repeat.
-      const last = chunks[chunks.length - 1];
-      if (last && t.toLowerCase().startsWith(last.toLowerCase())) chunks[chunks.length - 1] = t;
-      else chunks.push(t);
-      interim = ''; renderLive();
+    onStatus: (state, p) => {
+      if (state === 'listening') {
+        const t0 = Date.now();
+        const tick = () => {
+          const sec = Math.floor((Date.now() - t0) / 1000);
+          showLive(`Listening… ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`, 'Tap the mic to finish');
+        };
+        tick();
+        clock = setInterval(tick, 500);
+      } else if (state === 'working') {
+        clearInterval(clock);
+        working = true;
+        setListening(false);
+        $('micBtn').disabled = true;
+        showLive(loadPct !== null && loadPct < 1 ? `Downloading the voice model… ${Math.round(loadPct * 100)}%` : 'Turning speech into text…');
+      } else if (state === 'loading') {
+        loadPct = p;
+        if (working) showLive(p < 1 ? `Downloading the voice model… ${Math.round(p * 100)}%` : 'Turning speech into text…');
+      }
     },
+    onFinalChunk: (t) => { heard = t; },
     onError: (code) => showToast(SPEECH_ERRORS[code] || 'Voice input failed'),
     onEnd: () => {
-      const text = chunks.join('\n');
-      chunks = []; interim = '';
+      clearInterval(clock);
+      const text = heard;
+      heard = '';
+      working = false;
+      busy = false;
+      $('live').hidden = true;
       setListening(false);
       if (text.trim()) runCapture(text, 'voice');
     }
@@ -374,8 +393,10 @@ if (isSupported()) {
   $('micBtn').addEventListener('click', () => {
     if (!listening) {
       if (!ready || busy) return;
-      chunks = []; interim = ''; renderLive();
+      heard = '';
+      busy = true;          // blocks typed notes until the recording has been handled
       setListening(true);
+      $('micBtn').disabled = false;
       recogniser.start();
     } else {
       recogniser.stop();
@@ -411,11 +432,6 @@ function installRow() {
 
 function openSettings() {
   const s = openSheet({ title: 'Settings' });
-  const langBtns = SPEECH_LANGS.map(([code, label]) => h('button', { type: 'button', text: label, onclick: () => { setLang(code); syncLang(); } }));
-  function syncLang() {
-    langBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(SPEECH_LANGS[i][0] === getLang())));
-  }
-  syncLang();
   const file = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
   file.addEventListener('change', async () => {
     const f = file.files[0];
@@ -446,7 +462,6 @@ function openSettings() {
     } }),
     h('button', { class: 'btn left', text: 'Import backup', onclick: () => file.click() }),
     h('button', { class: 'btn left', text: 'History', onclick: openHistory }),
-    ...(isSupported() ? [h('div', { class: 'label', text: 'Voice accent' }), h('div', { class: 'seg' }, langBtns)] : []),
     ...[installRow()].filter(Boolean),
     file,
     h('div', { class: 'foot', text: 'Suun · your notes stay on this device' }));

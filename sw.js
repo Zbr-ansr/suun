@@ -1,12 +1,23 @@
-const VERSION = 'v4';
+const VERSION = 'v5';
 const SHELL = `suun-shell-${VERSION}`;
 const VENDOR = `suun-vendor-${VERSION}`;
 const PRECACHE = [
   './', './index.html', './manifest.webmanifest', './css/styles.css',
   './js/config.js', './js/db.js', './js/splitter.js', './js/embedder.js',
-  './js/sorter.js', './js/speech.js', './js/app.js', './js/background.js', './js/icons.js',
+  './js/sorter.js', './js/dictation.js', './js/whisper-worker.js', './js/app.js', './js/background.js', './js/icons.js',
   './icons/icon-192.png', './icons/icon-512.png',
 ];
+
+// GitHub Pages cannot send these two headers, so the service worker adds them. They make the page
+// "cross-origin isolated", which lets the speech and sorting models use several CPU threads
+// instead of one. Takes effect from the second launch, once this worker controls the page.
+function isolate(res) {
+  if (!res || res.status === 0) return res;
+  const headers = new Headers(res.headers);
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Embedder-Policy', 'credentialless');
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting()));
@@ -35,14 +46,14 @@ self.addEventListener('fetch', (e) => {
       });
       if (cached) {
         refresh.catch(() => {});
-        return cached;
+        return isolate(cached);
       }
       try {
-        return await refresh;
+        return isolate(await refresh);
       } catch (err) {
         if (req.mode === 'navigate') {
           const fallback = await cache.match('./index.html');
-          if (fallback) return fallback;
+          if (fallback) return isolate(fallback);
         }
         throw err;
       }

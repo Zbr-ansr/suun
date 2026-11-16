@@ -3,8 +3,7 @@ export const MIN_MARGIN = 0.04;     // lowest gap between best and second-best n
 export const MAX_REFS_PER_NODE = 50;// newest confirmed items used as references per node
 export const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 export const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2';
-export const SPEECH_LANG = 'en-IN';
-export const SPEECH_LANGS = [['en-IN', 'India'], ['en-GB', 'UK'], ['en-US', 'US']];
+export const WHISPER_MODEL = 'Xenova/whisper-base.en';   // 77 MB, downloaded once on first dictation
 export const COLOURS = { blue:'#0A84FF', indigo:'#5E5CE6', purple:'#BF5AF2', pink:'#FF375F',
                          red:'#FF453A', orange:'#FF9F0A', green:'#30D158', teal:'#40C8E0' };
 export const STARTER_NODES = [
