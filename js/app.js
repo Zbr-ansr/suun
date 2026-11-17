@@ -4,7 +4,7 @@ import { openDb, seedIfEmpty, getNodes, addNode, updateNode, deleteNode, getItem
 import { splitTranscript, toChecklistItems, proposeNodeName } from './splitter.js';
 import { loadModel, isReady } from './embedder.js';
 import { classifySplit, ensureVectors } from './sorter.js';
-import { isSupported, createRecogniser } from './dictation.js';
+import { isSupported, createRecogniser, isModelCached } from './dictation.js';
 import { glyph } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
@@ -12,7 +12,7 @@ const ICONS = ['🎓', '🌿', '💞', '🛒', '💡', '💼', '🏋️', '💰'
 const SPEECH_ERRORS = {
   'not-allowed': 'Microphone access is blocked. Allow it in the site settings.',
   'audio-capture': 'No microphone found.',
-  'model': 'Connect to the internet once to download the voice model (77 MB).',
+  'model': 'The voice model download stopped. What arrived is kept; it resumes next time.',
   'transcribe': 'Could not turn that recording into text. Try again.'
 };
 
@@ -347,6 +347,21 @@ function setListening(on) {
   $('micBtn').setAttribute('aria-label', on ? 'Stop dictation' : 'Start dictation');
   updateInputs();
 }
+// Voice model state, shared by the recording panel and the Settings row.
+const voice = { state: 'unknown', text: '' };
+const voiceViews = new Set();
+const mb = (n) => (n / 1048576).toFixed(0);
+function setVoice(state, text) {
+  voice.state = state;
+  voice.text = text;
+  voiceViews.forEach((f) => f());
+}
+function progressText(m) {
+  const pct = m.total ? Math.floor((m.loaded / m.total) * 100) : 0;
+  if (m.state === 'preparing') return 'Preparing the voice model…';
+  if (m.state === 'retrying') return `Connection dropped, retrying… ${pct}%`;
+  return `Downloading the voice model… ${pct}% (${mb(m.loaded)} of ${mb(m.total)} MB)`;
+}
 function showLive(text, hint) {
   $('live').hidden = false;
   $('liveText').textContent = text;
@@ -355,7 +370,12 @@ function showLive(text, hint) {
 }
 if (isSupported()) {
   let working = false;
-  let loadPct = null;
+  isModelCached().then((yes) => { if (voice.state === 'unknown') setVoice(yes ? 'ready' : 'missing', ''); });
+  voiceViews.add(() => {
+    if (!working) return;
+    const loadingNow = voice.state === 'downloading' || voice.state === 'preparing';
+    showLive(loadingNow ? voice.text : 'Turning speech into text…');
+  });
   recogniser = createRecogniser({
     onStatus: (state, p) => {
       if (state === 'listening') {
@@ -371,20 +391,29 @@ if (isSupported()) {
         working = true;
         setListening(false);
         $('micBtn').disabled = true;
-        showLive(loadPct !== null && loadPct < 1 ? `Downloading the voice model… ${Math.round(loadPct * 100)}%` : 'Turning speech into text…');
+        const loadingNow = voice.state === 'downloading' || voice.state === 'preparing';
+        showLive(loadingNow ? voice.text : 'Turning speech into text…');
       } else if (state === 'loading') {
-        loadPct = p;
-        if (working) showLive(p < 1 ? `Downloading the voice model… ${Math.round(p * 100)}%` : 'Turning speech into text…');
+        setVoice(p.state === 'preparing' ? 'preparing' : 'downloading', progressText(p));
       }
     },
     onFinalChunk: (t) => { heard = t; },
-    onError: (code) => showToast(SPEECH_ERRORS[code] || 'Voice input failed'),
+    onError: (code, retry) => {
+      if (code === 'model') setVoice('missing', '');
+      showToast(SPEECH_ERRORS[code] || 'Voice input failed', retry ? { label: 'Retry', run: () => {
+        if (busy) return;
+        busy = true;
+        updateInputs();
+        retry();
+      } } : undefined);
+    },
     onEnd: () => {
       clearInterval(clock);
       const text = heard;
       heard = '';
       working = false;
       busy = false;
+      if (voice.state === 'downloading' || voice.state === 'preparing') setVoice('ready', '');
       $('live').hidden = true;
       setListening(false);
       if (text.trim()) runCapture(text, 'voice');
@@ -430,6 +459,30 @@ function installRow() {
   return note;
 }
 
+function voiceRow() {
+  if (!recogniser) return null;
+  const btn = h('button', { class: 'btn left' });
+  const paint = () => {
+    // The sheet was closed: stop updating a button nobody can see.
+    if (btn.dataset.shown && !btn.isConnected) { voiceViews.delete(paint); return; }
+    btn.dataset.shown = '1';
+    const loadingNow = voice.state === 'downloading' || voice.state === 'preparing';
+    btn.disabled = loadingNow || voice.state === 'ready';
+    btn.textContent = voice.state === 'ready' ? 'Voice model ready (works offline)'
+      : loadingNow ? voice.text
+      : 'Download voice model (77 MB, use Wi-Fi)';
+  };
+  btn.addEventListener('click', () => {
+    setVoice('downloading', 'Starting download…');
+    recogniser.prepare()
+      .then(() => setVoice('ready', ''))
+      .catch(() => { setVoice('missing', ''); showToast(SPEECH_ERRORS.model); });
+  });
+  voiceViews.add(paint);
+  paint();
+  return btn;
+}
+
 function openSettings() {
   const s = openSheet({ title: 'Settings' });
   const file = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
@@ -462,6 +515,7 @@ function openSettings() {
     } }),
     h('button', { class: 'btn left', text: 'Import backup', onclick: () => file.click() }),
     h('button', { class: 'btn left', text: 'History', onclick: openHistory }),
+    ...[voiceRow()].filter(Boolean),
     ...[installRow()].filter(Boolean),
     file,
     h('div', { class: 'foot', text: 'Suun · your notes stay on this device' }));

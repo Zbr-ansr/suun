@@ -1,7 +1,19 @@
 // Records the microphone, then turns the recording into text with Whisper in a worker.
 // Nothing leaves the phone. The text arrives after recording stops, not while speaking.
+import { WHISPER_MODEL } from './config.js';
+
 const RATE = 16000;            // Whisper expects 16 kHz mono
 const MAX_MS = 3 * 60 * 1000;  // stop by itself after three minutes
+
+// True once the library holds both model files in its cache, so dictation needs no download.
+export async function isModelCached() {
+  try {
+    const keys = await (await caches.open('transformers-cache')).keys();
+    return keys.filter((r) => r.url.includes(WHISPER_MODEL) && r.url.endsWith('.onnx')).length >= 2;
+  } catch (e) {
+    return false;
+  }
+}
 
 export function isSupported() {
   return typeof window !== 'undefined' && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
@@ -27,7 +39,7 @@ export function createRecogniser({ onStatus, onFinalChunk, onError, onEnd }) {
       worker = new Worker(new URL('./whisper-worker.js', import.meta.url), { type: 'module' });
       worker.onmessage = (e) => {
         const m = e.data;
-        if (m.type === 'progress') { onStatus('loading', m.p); return; }
+        if (m.type === 'progress') { onStatus('loading', m); return; }
         const p = pending.get(m.id);
         if (!p) return;
         pending.delete(m.id);
@@ -62,21 +74,34 @@ export function createRecogniser({ onStatus, onFinalChunk, onError, onEnd }) {
     }
   }
 
+  // pcm is kept until it has been turned into text, so a failed model download loses no speech.
+  async function transcribe(pcm) {
+    try {
+      onStatus('working');
+      if (pcm.length > RATE * 0.4) {
+        const text = cleanTranscript(await ask('transcribe', pcm.slice()));
+        if (text) onFinalChunk(text);
+      }
+    } catch (e) {
+      if (e && e.message === 'model') onError('model', () => transcribe(pcm));
+      else onError('transcribe');
+    }
+    onEnd();
+  }
+
   async function finish() {
     clearTimeout(timer);
     if (stream) stream.getTracks().forEach((t) => t.stop());
     stream = null;
+    let pcm;
     try {
-      onStatus('working');
-      const pcm = await toPcm(new Blob(parts, { type: rec.mimeType }));
-      if (pcm.length > RATE * 0.4) {
-        const text = cleanTranscript(await ask('transcribe', pcm));
-        if (text) onFinalChunk(text);
-      }
+      pcm = await toPcm(new Blob(parts, { type: rec.mimeType }));
     } catch (e) {
-      onError(e && e.message === 'model' ? 'model' : 'transcribe');
+      onError('transcribe');
+      onEnd();
+      return;
     }
-    onEnd();
+    await transcribe(pcm);
   }
 
   return {
@@ -101,6 +126,10 @@ export function createRecogniser({ onStatus, onFinalChunk, onError, onEnd }) {
     },
     stop() {
       if (rec && rec.state !== 'inactive') rec.stop();
+    },
+    // Download (or resume downloading) the model without recording. Resolves when it is ready.
+    prepare() {
+      return ask('load');
     }
   };
 }
